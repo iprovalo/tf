@@ -41,7 +41,8 @@ tf.config.set_logical_device_configuration(physical_devices_cpu[0],
 
 physical_devices_gpu = tf.config.list_physical_devices('GPU')
 print("GPU Physical: " + str(physical_devices_gpu))
-tf.config.experimental.set_visible_devices(physical_devices_gpu[0:num_workers], 'GPU') #TODO: temp forcing to use a single GPU
+#Forcing to use specific number of GPUs
+tf.config.experimental.set_visible_devices(physical_devices_gpu[0:num_workers], 'GPU')
 
 tf.config.threading.set_inter_op_parallelism_threads(num_workers)
 tf.config.threading.set_intra_op_parallelism_threads(num_workers)
@@ -99,13 +100,12 @@ with strategy.scope():
     if debug_verbose:
         print(sequence_of_numbers)
 
-    #random
+    #random - not used
     # feature_groups = (tuple(np.random.uniform(0, 1, feature_group_dim) for f in range(feature_groups_dim)))
     #sequential - to test for immutability within each feature group
     feature_groups = (tuple(sequence_of_numbers for f in range(feature_groups_dim)))
     #labels are random numbers, weights are sequential to test for the shuffling behavior:
     elements = [(feature_groups,np.random.uniform(0, 1, 1), [n]) for n in range(data_size)]
-    # print(feature_groups_types)
 
     dataset = tf.data.Dataset.from_generator(
         lambda: iter(elements), (feature_groups_types, tf.float32, tf.float32))
@@ -132,12 +132,6 @@ with strategy.scope():
 
     tf.data.experimental.save(dataset, path, shard_func=lambda x, y: x % num_shards)
 
-    # print("ds after saving - should be no change"+"\n")
-    # for elem in dataset:
-    #   print("\t"+str(elem))
-    # print("=============="+"\n\n")
-
-#(tf.TensorSpec(shape=(), dtype=tf.int64, name=None), tf.TensorSpec(shape=(batch_size,), dtype=tf.int64))
     new_dataset = tf.data.experimental.load(path, tensor_spec, reader_func=partial_reader_func)
     if debug_verbose:
         print("print ds after loading - notice the shuffled batches"+"\n")
@@ -161,7 +155,7 @@ with strategy.scope():
 
 
     options = tf.data.Options()
-    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
+    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
     new_dataset = new_dataset.with_options(options)
     dist_dataset = strategy.experimental_distribute_dataset(new_dataset)
 
