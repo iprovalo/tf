@@ -16,7 +16,7 @@ data_size = 100000
 batch_size = 10
 steps_per_epoch = int(round(data_size / batch_size))
 num_shards = 10
-num_workers = 2
+num_workers = 1
 epochs = 2
 
 
