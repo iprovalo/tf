@@ -4,21 +4,28 @@ import tensorflow as tf
 from functools import partial
 from tensorflow import keras
 from tensorflow.python.keras.optimizer_v2 import adam
+import numpy as np
+from tensorflow import TensorSpec
 
+print(tf.__version__)
 
 name='benchmark'
 
-path = os.path.join(tempfile.gettempdir() + "/data/"+name+"/data/", "experiment_saved_data")
+path = os.path.join(tempfile.gettempdir() + "/data/"+name+"/data/", "experiment_saved_data")#tempfile.gettempdir()
 print("base path: " + path)
 logs_path = 'logs'
 
-data_size = 100000
-batch_size = 10
+debug_verbose = False
+
+data_size = 24 if debug_verbose else 1000000
+batch_size = 4 if debug_verbose else 1024
 steps_per_epoch = int(round(data_size / batch_size))
-num_shards = 10
+num_shards = 4
 num_workers = 1
 epochs = 2
 
+feature_group_dim = 3 if debug_verbose else 100
+feature_groups_dim = 2 if debug_verbose else 3
 
 # tf.debugging.set_log_device_placement(True)
 os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
@@ -46,10 +53,7 @@ print("GPU Physical After Config: " + str(physical_devices_gpu))
 logical_devices_gpu = tf.config.list_logical_devices('GPU')
 print("GPU Logical: " + str(logical_devices_gpu))
 
-print("GPU Device: " + tf.test.gpu_device_name())
 print("TF Config: " + str(tf.config))
-
-
 
 # tf.debugging.experimental.enable_dump_debug_info(
 #     dump_root=path + "/" + logs_path,
@@ -73,22 +77,102 @@ with strategy.scope():
     partial_reader_func = partial(custom_reader_func, num_shards=num_shards)
 
 
-    dataset = tf.data.Dataset.range(data_size)
+    #prepare the metadata:
+    feature_mappings = {str(f): feature_group_dim for f in range(feature_groups_dim)}
+    print(feature_mappings)
+
+    feature_groups_specs = (tuple(tf.TensorSpec(shape=(None, feature_group_dim), dtype=tf.float32, name=None) for f in range(feature_groups_dim)))
+
+    tensor_spec = (TensorSpec(shape=(), dtype=tf.int64, name=None),#enum for sharding, to be removed after loading the data
+                   # Keras Input: (inputs, targets, sample_weights)
+                   (feature_groups_specs,#Feature groups, inputs
+                    TensorSpec(shape=(None, 1), dtype=tf.float32, name=None),#labels, targets
+                    TensorSpec(shape=(None, 1), dtype=tf.float32, name=None)))#weights, sample_weights
+    print(tensor_spec)
+
+    feature_groups_types = (tuple(tf.float32 for f in range(feature_groups_dim)))
+    print(feature_groups_types)
+
+    numbers = range(feature_group_dim)
+    sequence_of_numbers = [number for number in numbers]
+
+    if debug_verbose:
+        print(sequence_of_numbers)
+
+    #random
+    # feature_groups = (tuple(np.random.uniform(0, 1, feature_group_dim) for f in range(feature_groups_dim)))
+    #sequential - to test for immutability within each feature group
+    feature_groups = (tuple(sequence_of_numbers for f in range(feature_groups_dim)))
+    #labels are random numbers, weights are sequential to test for the shuffling behavior:
+    elements = [(feature_groups,np.random.uniform(0, 1, 1), [n]) for n in range(data_size)]
+    # print(feature_groups_types)
+
+    dataset = tf.data.Dataset.from_generator(
+        lambda: iter(elements), (feature_groups_types, tf.float32, tf.float32))
+    if debug_verbose:
+        print("initial ds"+"\n")
+        for elem in dataset:
+          print("\t"+str(elem))
+        print("=============="+"\n\n")
+
+
     dataset = dataset.batch(batch_size)
+    if debug_verbose:
+        print("batched ds, added arrays"+"\n")
+        for elem in dataset:
+          print("\t"+str(elem))
+        print("=============="+"\n\n")
+
     dataset = dataset.enumerate()
+    if debug_verbose:
+        print("enumed ds, added a new element for sharding strategy"+"\n")
+        for elem in dataset:
+          print("\t"+str(elem))
+        print("=============="+"\n\n")
 
     tf.data.experimental.save(dataset, path, shard_func=lambda x, y: x % num_shards)
 
-    new_dataset = tf.data.experimental.load(path, (tf.TensorSpec(shape=(), dtype=tf.int64, name=None), tf.TensorSpec(shape=(batch_size,), dtype=tf.int64)), reader_func=partial_reader_func)
+    # print("ds after saving - should be no change"+"\n")
+    # for elem in dataset:
+    #   print("\t"+str(elem))
+    # print("=============="+"\n\n")
+
+#(tf.TensorSpec(shape=(), dtype=tf.int64, name=None), tf.TensorSpec(shape=(batch_size,), dtype=tf.int64))
+    new_dataset = tf.data.experimental.load(path, tensor_spec, reader_func=partial_reader_func)
+    if debug_verbose:
+        print("print ds after loading - notice the shuffled batches"+"\n")
+        for elem in new_dataset:
+          print("\t"+str(elem))
+        print("=============="+"\n\n")
+
     new_dataset = new_dataset.map(lambda x, y: y)
+    if debug_verbose:
+        print("print ds after loading and de-enuming - back to the original elements, no id"+"\n")
+        for elem in new_dataset:
+          print("\t"+str(elem))
+        print("=============="+"\n\n")
+
     new_dataset = new_dataset.repeat(epochs)
+    if debug_verbose:
+        print("print ds after applying repeat and de-enuming - back to the original elements, no id" + "\n")
+        for elem in new_dataset:
+            print("\t" + str(elem))
+        print("==============" + "\n\n")
+
 
     options = tf.data.Options()
     options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
     new_dataset = new_dataset.with_options(options)
     dist_dataset = strategy.experimental_distribute_dataset(new_dataset)
 
-    inputs = [keras.Input(shape=(1,))]
+    if debug_verbose:
+        for epoch in range(epochs):
+            print("epoch " + str(epoch) + ": print dist ds - per replica batches are already shuffled and sharded, notice the batch size reduction proportional to the number of workers"+"\n")
+            for elem in dist_dataset:
+              print("\t"+str(elem))
+            print("==============" + "\n\n")
+
+    inputs = [keras.Input(shape=(dim,), name=name) for name, dim in feature_mappings.items()]
 
     m = keras.layers.concatenate(inputs) if len(inputs) > 1 else inputs[0]
 
@@ -131,4 +215,3 @@ with strategy.scope():
 
     print('Training finished.')
     print(history.history)
-
