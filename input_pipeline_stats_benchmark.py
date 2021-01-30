@@ -17,8 +17,8 @@ logs_path = 'logs'
 
 debug_verbose = False
 
-data_size = 24 if debug_verbose else 1000000
-batch_size = 4 if debug_verbose else 1024
+data_size = 24 if debug_verbose else 100000
+batch_size = 4 if debug_verbose else 100
 steps_per_epoch = int(round(data_size / batch_size))
 num_shards = 4
 num_workers = 1
