@@ -3,7 +3,6 @@ import os
 import tensorflow as tf
 from functools import partial
 from tensorflow import keras
-from tensorflow.python.keras.optimizer_v2 import adam
 import numpy as np
 from tensorflow import TensorSpec
 
@@ -11,11 +10,15 @@ print(tf.__version__)
 
 name='benchmark'
 
-path = os.path.join(tempfile.gettempdir() + "/data/"+name+"/data/", "experiment_saved_data")#tempfile.gettempdir()
+path = os.path.join(tempfile.gettempdir() + "/data/"+name+"/data/", "experiment_saved_data")
 print("base path: " + path)
 logs_path = 'logs'
+debug_dir = 'debug'
 
 debug_verbose = False
+debug_dump = False
+
+is_dist_dataset = True
 
 data_size = 24 if debug_verbose else 100000
 batch_size = 4 if debug_verbose else 100
@@ -56,10 +59,11 @@ print("GPU Logical: " + str(logical_devices_gpu))
 
 print("TF Config: " + str(tf.config))
 
-# tf.debugging.experimental.enable_dump_debug_info(
-#     dump_root=path + "/" + logs_path,
-#     tensor_debug_mode="FULL_HEALTH",
-#     circular_buffer_size=-1, op_regex=None, tensor_dtypes=None)
+if debug_dump:
+    tf.debugging.experimental.enable_dump_debug_info(
+        dump_root=path + "/" + logs_path+"/" + debug_dir,
+        tensor_debug_mode="FULL_HEALTH",
+        circular_buffer_size=-1, op_regex=None, tensor_dtypes=None)
 
 
 strategy = tf.distribute.MirroredStrategy()
@@ -153,16 +157,19 @@ with strategy.scope():
             print("\t" + str(elem))
         print("==============" + "\n\n")
 
-
     options = tf.data.Options()
-    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
-    new_dataset = new_dataset.with_options(options)
-    dist_dataset = strategy.experimental_distribute_dataset(new_dataset)
+    if is_dist_dataset:
+        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
+        new_dataset = new_dataset.with_options(options)
+        new_dataset = strategy.experimental_distribute_dataset(new_dataset)
+    else:
+        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
+        new_dataset = new_dataset.with_options(options)
 
     if debug_verbose:
         for epoch in range(epochs):
             print("epoch " + str(epoch) + ": print dist ds - per replica batches are already shuffled and sharded, notice the batch size reduction proportional to the number of workers"+"\n")
-            for elem in dist_dataset:
+            for elem in new_dataset:
               print("\t"+str(elem))
             print("==============" + "\n\n")
 
@@ -178,7 +185,8 @@ with strategy.scope():
     m = keras.Model(inputs=inputs, outputs=x, name=name)
     print(m.summary())
 
-    m.compile(optimizer=adam.Adam(learning_rate=0.001),
+    model_optimizer = keras.optimizers.Adamax()
+    m.compile(optimizer=model_optimizer,
                   loss=keras.losses.binary_crossentropy,
                   metrics=[keras.metrics.BinaryAccuracy()])
 
@@ -193,12 +201,12 @@ with strategy.scope():
             log_dir=os.path.join(path, logs_path),
             update_freq='epoch',
             histogram_freq=1,  # epochs before logging weight histogram with val data
-            profile_batch=(batch_size + 1, batch_size + 2))
+            profile_batch=(batch_size*10 + 1, batch_size*10 + 2))
     ]
 
-    history = m.fit(dist_dataset,
+    history = m.fit(new_dataset,
                         epochs=epochs,
-                        validation_data=dist_dataset,
+                        validation_data=new_dataset,
                         validation_freq=1,
                         steps_per_epoch=steps_per_epoch,
                         validation_steps=steps_per_epoch,
