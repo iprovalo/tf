@@ -32,11 +32,14 @@ epochs = 2
 feature_group_dim = 3 if debug_verbose else 100
 feature_groups_dim = 2 if debug_verbose else 3
 emb_feature_group_dim = 1
-emb_feature_groups_dim = 1
+emb_feature_names = ['emb0','emb1','emb2']
+emb_feature_groups_dim = len(emb_feature_names)
 emb_input_dim = 100
 emb_output_dim = 2
 
-#tf.debugging.set_log_device_placement(True)
+if debug_verbose:
+    tf.debugging.set_log_device_placement(True)
+
 os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 os.environ['NCCL_DEBUG'] = 'INFO'
@@ -194,27 +197,21 @@ with strategy.scope():
 
     inputs = [keras.Input(shape=(dim,), name=name) for name, dim in combined_feature_mappings.items()]
 
-    emb0_features = []
     other_features = []
-
-    input_feature_index=0
-    for name, dim in combined_feature_mappings.items():
-        if 'emb0' == name:
-            emb0_features.append(inputs[input_feature_index])
-        else:
-            other_features.append(inputs[input_feature_index])
-
     embedding_features = []
 
-    if len(emb0_features) > 0:
-        emb0_embeddings = keras.layers.Embedding(input_dim=emb_input_dim,
-                                                    output_dim=emb_output_dim, name='emb0_embeddings')(emb0_features.pop())
-        emb0_embeddings = keras.layers.GlobalAveragePooling1D(name="global_avg_pool1d_emb0")(emb0_embeddings)
-        embedding_features.append(emb0_embeddings)
+    input_feature_index=0
+    for f_name, dim in combined_feature_mappings.items():
+        if 'emb' in f_name:
+            emb_embeddings = keras.layers.Embedding(input_dim=emb_input_dim, output_dim=emb_output_dim,
+                                                     name=f_name+'_embeddings')(inputs[input_feature_index])
+            emb_embeddings = keras.layers.GlobalAveragePooling1D(name="global_avg_pool1d_"+f_name)(emb_embeddings)
+            embedding_features.append(emb_embeddings)
+        else:
+            other_features.append(inputs[input_feature_index])
+        input_feature_index += 1
 
     m = keras.layers.concatenate(other_features + embedding_features)
-
-    #m = keras.layers.concatenate(inputs) if len(inputs) > 1 else inputs[0]
 
     x = keras.layers.Dropout(0.1, seed=1)(m)
     x = keras.layers.Dense(128, 'relu')(x)
