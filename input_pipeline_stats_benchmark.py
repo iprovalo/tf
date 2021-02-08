@@ -15,6 +15,8 @@ print("base path: " + path)
 logs_path = 'logs'
 debug_dir = 'debug'
 
+model_optimizer = keras.optimizers.Adamax()
+
 debug_verbose = False
 debug_dump = False
 
@@ -29,6 +31,10 @@ epochs = 2
 
 feature_group_dim = 3 if debug_verbose else 100
 feature_groups_dim = 2 if debug_verbose else 3
+emb_feature_group_dim = 1
+emb_feature_groups_dim = 1
+emb_input_dim = 100
+emb_output_dim = 2
 
 #tf.debugging.set_log_device_placement(True)
 os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
@@ -85,8 +91,20 @@ with strategy.scope():
     #prepare the metadata:
     feature_mappings = {str(f): feature_group_dim for f in range(feature_groups_dim)}
     print(feature_mappings)
-
     feature_groups_specs = (tuple(tf.TensorSpec(shape=(None, feature_group_dim), dtype=tf.float32, name=None) for f in range(feature_groups_dim)))
+    print(feature_groups_specs)
+
+    embedding_feature_mappings = {'emb'+str(f): emb_feature_group_dim for f in range(emb_feature_groups_dim)}
+    print(embedding_feature_mappings)
+    embedding_feature_groups_specs = (tuple(tf.TensorSpec(shape=(None, emb_feature_group_dim), dtype=tf.float32, name=None) for f in range(emb_feature_groups_dim)))
+    print(embedding_feature_groups_specs)
+
+    combined_feature_mappings = {**feature_mappings, **embedding_feature_mappings}
+    print(combined_feature_mappings)
+
+    for t in embedding_feature_groups_specs:
+        feature_groups_specs += (t,)
+    print('combined: ' + str(feature_groups_specs))
 
     tensor_spec = (TensorSpec(shape=(), dtype=tf.int64, name=None),#enum for sharding, to be removed after loading the data
                    # Keras Input: (inputs, targets, sample_weights)
@@ -95,19 +113,21 @@ with strategy.scope():
                     TensorSpec(shape=(None, 1), dtype=tf.float32, name=None)))#weights, sample_weights
     print(tensor_spec)
 
-    feature_groups_types = (tuple(tf.float32 for f in range(feature_groups_dim)))
+    feature_groups_types = (tuple(tf.float32 for f in range(feature_groups_dim+emb_feature_groups_dim)))
     print(feature_groups_types)
 
     numbers = range(feature_group_dim)
     sequence_of_numbers = [number for number in numbers]
-
     if debug_verbose:
         print(sequence_of_numbers)
 
     #random - not used
-    # feature_groups = (tuple(np.random.uniform(0, 1, feature_group_dim) for f in range(feature_groups_dim)))
+    # feature_groups = (tuple([np.random.uniform(0, 1, feature_group_dim)] for f in range(feature_groups_dim)))
     #sequential - to test for immutability within each feature group
     feature_groups = (tuple(sequence_of_numbers for f in range(feature_groups_dim)))
+    emb_feature_groups = (tuple([np.random.randint(1, emb_input_dim+1)] for f in range(emb_feature_groups_dim)))
+    for t in emb_feature_groups:
+        feature_groups += (t,)
     #labels are random numbers, weights are sequential to test for the shuffling behavior:
     elements = [(feature_groups,np.random.uniform(0, 1, 1), [n]) for n in range(data_size)]
 
@@ -172,9 +192,29 @@ with strategy.scope():
               print("\t"+str(elem))
             print("==============" + "\n\n")
 
-    inputs = [keras.Input(shape=(dim,), name=name) for name, dim in feature_mappings.items()]
+    inputs = [keras.Input(shape=(dim,), name=name) for name, dim in combined_feature_mappings.items()]
 
-    m = keras.layers.concatenate(inputs) if len(inputs) > 1 else inputs[0]
+    emb0_features = []
+    other_features = []
+
+    input_feature_index=0
+    for name, dim in combined_feature_mappings.items():
+        if 'emb0' == name:
+            emb0_features.append(inputs[input_feature_index])
+        else:
+            other_features.append(inputs[input_feature_index])
+
+    embedding_features = []
+
+    if len(emb0_features) > 0:
+        emb0_embeddings = keras.layers.Embedding(input_dim=emb_input_dim,
+                                                    output_dim=emb_output_dim, name='emb0_embeddings')(emb0_features.pop())
+        emb0_embeddings = keras.layers.GlobalAveragePooling1D(name="global_avg_pool1d_emb0")(emb0_embeddings)
+        embedding_features.append(emb0_embeddings)
+
+    m = keras.layers.concatenate(other_features + embedding_features)
+
+    #m = keras.layers.concatenate(inputs) if len(inputs) > 1 else inputs[0]
 
     x = keras.layers.Dropout(0.1, seed=1)(m)
     x = keras.layers.Dense(128, 'relu')(x)
@@ -184,7 +224,6 @@ with strategy.scope():
     m = keras.Model(inputs=inputs, outputs=x, name=name)
     print(m.summary())
 
-    model_optimizer = keras.optimizers.Adamax()
     m.compile(optimizer=model_optimizer,
                   loss=keras.losses.binary_crossentropy,
                   metrics=[keras.metrics.BinaryAccuracy()])
