@@ -30,7 +30,7 @@ epochs = 2
 feature_group_dim = 3 if debug_verbose else 100
 feature_groups_dim = 2 if debug_verbose else 3
 
-# tf.debugging.set_log_device_placement(True)
+#tf.debugging.set_log_device_placement(True)
 os.environ['TF_GPU_THREAD_MODE'] = 'gpu_private'
 os.environ['TF_FORCE_GPU_ALLOW_GROWTH'] = 'true'
 os.environ['NCCL_DEBUG'] = 'INFO'
@@ -119,7 +119,6 @@ with strategy.scope():
           print("\t"+str(elem))
         print("=============="+"\n\n")
 
-
     dataset = dataset.batch(batch_size)
     if debug_verbose:
         print("batched ds, added arrays"+"\n")
@@ -136,40 +135,40 @@ with strategy.scope():
 
     tf.data.experimental.save(dataset, path, shard_func=lambda x, y: x % num_shards)
 
-    new_dataset = tf.data.experimental.load(path, tensor_spec, reader_func=partial_reader_func)
+    dataset = tf.data.experimental.load(path, tensor_spec, reader_func=partial_reader_func)
     if debug_verbose:
         print("print ds after loading - notice the shuffled batches"+"\n")
-        for elem in new_dataset:
+        for elem in dataset:
           print("\t"+str(elem))
         print("=============="+"\n\n")
 
-    new_dataset = new_dataset.map(lambda x, y: y)
+    dataset = dataset.map(lambda x, y: y)
     if debug_verbose:
         print("print ds after loading and de-enuming - back to the original elements, no id"+"\n")
-        for elem in new_dataset:
+        for elem in dataset:
           print("\t"+str(elem))
         print("=============="+"\n\n")
 
-    new_dataset = new_dataset.repeat(epochs)
+    dataset = dataset.repeat(epochs)
     if debug_verbose:
         print("print ds after applying repeat and de-enuming - back to the original elements, no id" + "\n")
-        for elem in new_dataset:
-            print("\t" + str(elem))
-        print("==============" + "\n\n")
+        for elem in dataset:
+            print("\t"+str(elem))
+        print("=============="+"\n\n")
 
     options = tf.data.Options()
     if is_dist_dataset:
         options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
-        new_dataset = new_dataset.with_options(options)
-        new_dataset = strategy.experimental_distribute_dataset(new_dataset)
+        dataset = dataset.with_options(options)
+        dataset = strategy.experimental_distribute_dataset(dataset)
     else:
         options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
-        new_dataset = new_dataset.with_options(options)
+        dataset = dataset.with_options(options)
 
     if debug_verbose:
         for epoch in range(epochs):
             print("epoch " + str(epoch) + ": print dist ds - per replica batches are already shuffled and sharded, notice the batch size reduction proportional to the number of workers"+"\n")
-            for elem in new_dataset:
+            for elem in dataset:
               print("\t"+str(elem))
             print("==============" + "\n\n")
 
@@ -204,9 +203,9 @@ with strategy.scope():
             profile_batch=(batch_size*10 + 1, batch_size*10 + 2))
     ]
 
-    history = m.fit(new_dataset,
+    history = m.fit(dataset,
                         epochs=epochs,
-                        validation_data=new_dataset,
+                        validation_data=dataset,
                         validation_freq=1,
                         steps_per_epoch=steps_per_epoch,
                         validation_steps=steps_per_epoch,
