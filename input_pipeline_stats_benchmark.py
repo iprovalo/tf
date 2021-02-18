@@ -26,9 +26,11 @@ data_size = 24 if debug_verbose else 100000
 batch_size = 4 if debug_verbose else 100
 steps_per_epoch = int(round(data_size / batch_size))
 num_shards = 4
-num_workers = 1
-epochs = 2
+num_workers = 8
+epochs = 4
 
+number_layers=10
+dense_dim=1024
 feature_group_dim = 3 if debug_verbose else 100
 feature_groups_dim = 2 if debug_verbose else 3
 emb_feature_group_dim = 1
@@ -142,6 +144,11 @@ with strategy.scope():
           print("\t"+str(elem))
         print("=============="+"\n\n")
 
+    # dataset = dataset.cache()
+    # dataset = dataset.batch(batch_size)
+    # dataset = dataset.repeat()
+    # dataset = dataset.prefetch(10)
+
     dataset = dataset.batch(batch_size)
     if debug_verbose:
         print("batched ds, added arrays"+"\n")
@@ -214,7 +221,8 @@ with strategy.scope():
     m = keras.layers.concatenate(other_features + embedding_features)
 
     x = keras.layers.Dropout(0.1, seed=1)(m)
-    x = keras.layers.Dense(128, 'relu')(x)
+    for l in range(number_layers):
+        x = keras.layers.Dense(dense_dim, 'relu')(x)
     x = keras.layers.Dense(1, activation='sigmoid',
                            kernel_regularizer=keras.regularizers.l2(0.0001),
                            name='output')(x)
@@ -236,7 +244,7 @@ with strategy.scope():
             log_dir=os.path.join(path, logs_path),
             update_freq='epoch',
             histogram_freq=1,  # epochs before logging weight histogram with val data
-            profile_batch=(batch_size*10 + 1, batch_size*10 + 2))
+            profile_batch=(batch_size*30 + 1, batch_size*30 + 6))
     ]
 
     history = m.fit(dataset,
